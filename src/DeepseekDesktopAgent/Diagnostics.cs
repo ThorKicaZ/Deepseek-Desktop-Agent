@@ -57,6 +57,9 @@ public static class Diagnostics
         sb.AppendLine("[配置]");
         sb.AppendLine("工作目录: " + cfg.WorkDir);
         sb.AppendLine("端口: " + port);
+        sb.AppendLine("浏览器: " + (string.IsNullOrWhiteSpace(cfg.BrowserPath)
+            ? "自动检测（" + (BrowserManager.DetectBrowserExe() ?? "未找到 Chrome / Edge") + "）"
+            : cfg.BrowserPath));
         sb.AppendLine("上次会话: " + (string.IsNullOrWhiteSpace(cfg.LastSessionUrl) ? "(空)" : cfg.LastSessionUrl));
         sb.AppendLine("夜间模式: " + cfg.NightMode + " / 自动执行: " + cfg.AutoExecute);
         sb.AppendLine();
@@ -107,7 +110,10 @@ public static class Diagnostics
         sb.AppendLine();
 
         sb.AppendLine("[浏览器进程]");
-        foreach (var name in new[] { "msedge", "chrome" })
+        var processNames = new List<string> { "msedge", "chrome" };
+        if (!string.IsNullOrWhiteSpace(cfg.BrowserPath))
+            processNames.Add(Path.GetFileNameWithoutExtension(cfg.BrowserPath));
+        foreach (var name in processNames.Distinct(StringComparer.OrdinalIgnoreCase))
         {
             foreach (var process in Process.GetProcessesByName(name))
             {
@@ -124,6 +130,7 @@ public static class Diagnostics
 
         sb.AppendLine("[顶层窗口]");
         var browser = new BrowserManager();
+        browser.UseBrowserExe(cfg.BrowserPath);
         foreach (var hWnd in Native.EnumTopLevelWindows())
         {
             var cls = Native.GetWindowClass(hWnd);

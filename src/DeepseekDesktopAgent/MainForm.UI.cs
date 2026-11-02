@@ -820,6 +820,37 @@ public sealed partial class MainForm
         opacityRow.Controls.Add(_lblOpacity);
         flow.Controls.Add(opacityRow);
 
+        flow.Controls.Add(SectionLabel("浏览器"));
+        _lblBrowserPath = new Label
+        {
+            Text = "",
+            AutoSize = false,
+            Width = 720,
+            Height = 22,
+            AutoEllipsis = true,
+            ForeColor = ThemeManager.Current.SubtleText,
+            Margin = new Padding(0, 2, 0, 4)
+        };
+        flow.Controls.Add(_lblBrowserPath);
+        var browserRow = new FlowLayoutPanel { AutoSize = true, WrapContents = false };
+        _btnPickBrowser = MakeButton("选择浏览器", 108);
+        _btnPickBrowser.Click += (_, _) => ChooseBrowserExe();
+        var btnAutoBrowser = MakeButton("自动检测", 92);
+        btnAutoBrowser.Click += (_, _) => UseAutoBrowser();
+        var btnRestartBrowser = MakeButton("重启浏览器", 108);
+        btnRestartBrowser.Click += (_, _) => _ = RestartBrowserAsync();
+        browserRow.Controls.AddRange(new Control[] { _btnPickBrowser, btnAutoBrowser, btnRestartBrowser });
+        flow.Controls.Add(browserRow);
+        flow.Controls.Add(new Label
+        {
+            Text = "留空则自动查找 Chrome / Edge。自定义路径仅支持 Chromium 内核浏览器（Chrome、Edge、Brave、Vivaldi、Chromium 等），" +
+                   "非 Chromium 内核无法建立调试连接；修改后需重启浏览器生效。",
+            AutoSize = false,
+            Width = 720,
+            Height = 44,
+            ForeColor = ThemeManager.Current.SubtleText
+        });
+
         flow.Controls.Add(SectionLabel("执行方式"));
         _chkAuto = new CheckBox { Text = "自动执行 PowerShell（关闭时每次弹窗确认）", AutoSize = true, Margin = new Padding(0, 2, 0, 2) };
         flow.Controls.Add(_chkAuto);
@@ -921,6 +952,135 @@ public sealed partial class MainForm
             ConfigService.Save(_cfg);
         };
     }
+
+    /// <summary>设置页“浏览器”：刷新当前生效的浏览器主程序（自定义路径或自动检测结果）。</summary>
+    private void RefreshBrowserPathLabel()
+    {
+        if (_lblBrowserPath == null || _lblBrowserPath.IsDisposed) return;
+        if (!string.IsNullOrWhiteSpace(_cfg.BrowserPath))
+        {
+            _lblBrowserPath.Text = "当前：" + _cfg.BrowserPath;
+            return;
+        }
+
+        var detected = BrowserManager.DetectBrowserExe();
+        _lblBrowserPath.Text = detected == null
+            ? "当前：自动检测（未找到 Chrome / Edge，请手动选择）"
+            : "当前：自动检测（" + detected + "）";
+    }
+
+    private void ChooseBrowserExe()
+    {
+        using var dialog = new OpenFileDialog
+        {
+            Title = "选择浏览器主程序",
+            Filter = "浏览器主程序 (*.exe)|*.exe|所有文件 (*.*)|*.*",
+            CheckFileExists = true
+        };
+        try
+        {
+            if (!string.IsNullOrWhiteSpace(_cfg.BrowserPath) && File.Exists(_cfg.BrowserPath))
+                dialog.InitialDirectory = Path.GetDirectoryName(_cfg.BrowserPath);
+            else
+            {
+                var detected = BrowserManager.DetectBrowserExe();
+                if (detected != null) dialog.InitialDirectory = Path.GetDirectoryName(detected);
+            }
+        }
+        catch { }
+
+        if (dialog.ShowDialog(this) != DialogResult.OK) return;
+        ApplyBrowserPath(dialog.FileName);
+    }
+
+    private void UseAutoBrowser() => ApplyBrowserPath("");
+
+    /// <summary>保存浏览器主程序路径：空串表示恢复自动检测，路径无效时直接拒绝。</summary>
+    private void ApplyBrowserPath(string path)
+    {
+        path = (path ?? "").Trim().Trim('"').Trim();
+        if (path.Length > 0 && !File.Exists(path))
+        {
+            MessageBox.Show(this, "找不到该文件：\r\n" + path, "指定浏览器", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return;
+        }
+
+        if (string.Equals(path, _cfg.BrowserPath, StringComparison.OrdinalIgnoreCase)) return;
+
+        _cfg.BrowserPath = path;
+        ConfigService.Save(_cfg);
+        RefreshBrowserPathLabel();
+        SetStatus(path.Length == 0 ? "浏览器路径已改为自动检测" : "浏览器路径已设置：" + path);
+        OfferBrowserRestart();
+    }
+
+    /// <summary>浏览器正在运行时询问是否立即重启，使新路径生效。</summary>
+    private void OfferBrowserRestart()
+    {
+        if (_browser == null || !_browser.IsAlive)
+        {
+            SetStatus("浏览器路径已保存，下次启动浏览器时生效");
+            return;
+        }
+        if (_busy)
+        {
+            SetStatus("浏览器路径已保存，本轮任务结束后重启浏览器生效");
+            return;
+        }
+
+        var answer = MessageBox.Show(this,
+            "浏览器路径已保存，需要重启浏览器后生效。\r\n\r\n现在重启浏览器吗？",
+            "重启浏览器", MessageBoxButtons.YesNo, MessageBoxIcon.Question);
+        if (answer == DialogResult.Yes) _ = RestartBrowserAsync();
+    }
+
+    /// <summary>关闭当前浏览器并按新配置重新启动，同时重建 CDP 连接。</summary>
+    private async Task RestartBrowserAsync()
+    {
+        if (_browser == null || !_browser.IsAlive)
+        {
+            MessageBox.Show(this, "浏览器尚未启动，保存后的路径会在下次启动时生效。", "重启浏览器",
+                MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return;
+        }
+        if (_busy)
+        {
+            MessageBox.Show(this, "Agent 正在执行任务，请先停止后再重启浏览器。", "重启浏览器",
+                MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return;
+        }
+
+        // 借用 watchdog 的恢复标记，避免重启过程中被判定为“窗口被关闭”再拉起一次。
+        _recovering = true;
+        try
+        {
+            SetStatus("正在重启浏览器...");
+            await _browser.CloseAsync();
+            // 端口没释放时新进程无法带同一个调试端口启动，先把旧实例等干净。
+            if (!await _browser.WaitPortClosedAsync(8000))
+                SetStatus("调试端口未释放，浏览器可能仍在上一个实例中运行");
+            if (_cdp != null)
+            {
+                try { await _cdp.DisposeAsync(); } catch { }
+                _cdp = null;
+            }
+            _webSessionReady = null;
+            _webShown = false;
+
+            await EnsureBrowserAsync(CancellationToken.None);
+            RefreshWebStateLabel();
+            SetStatus("浏览器已按新配置重启");
+        }
+        catch (Exception ex)
+        {
+            ShowError("重启浏览器失败", ex);
+        }
+        finally
+        {
+            _recovering = false;
+        }
+    }
+
     /// <summary>设置页“清理临时目录”入口：二次确认后清理 %TEMP% 下所有残留目录，跳过当前会话正在使用的目录。</summary>
     private void CleanTempDirs()
     {
@@ -985,6 +1145,7 @@ public sealed partial class MainForm
         _trkOpacity.Value = Math.Clamp(_cfg.OpacityPercent, 30, 100);
         _lblOpacity.Text = _trkOpacity.Value + "%";
         Opacity = _trkOpacity.Value / 100.0;
+        RefreshBrowserPathLabel();
 
         if (!string.IsNullOrWhiteSpace(_cfg.WorkDir))
         {
@@ -1019,6 +1180,7 @@ public sealed partial class MainForm
         _statusLabel.ForeColor = ThemeManager.Current.SubtleText;
         _counterLabel.ForeColor = ThemeManager.Current.SubtleText;
         _lblWorkDir.ForeColor = ThemeManager.Current.Text;
+        _lblBrowserPath.ForeColor = ThemeManager.Current.SubtleText;
         _lblStatus.ForeColor = ThemeManager.Current.SubtleText;
         _lstSessions.BackColor = ThemeManager.Current.Surface;
         _lstSessions.ForeColor = ThemeManager.Current.Text;

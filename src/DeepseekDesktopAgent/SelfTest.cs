@@ -68,6 +68,16 @@ public static class SelfTest
             Check("PowerShell 后台执行与中文输出", result.Output.Contains("中文OK"), result.Output.Replace("\r", "").Replace("\n", " / "));
             Check("PowerShell 输出文件存在", File.Exists(result.OutFile));
 
+            // 浏览器路径：去引号/空白与缺失校验是“指定自定义浏览器”的关键逻辑。
+            var browserExe = BrowserManager.NormalizeBrowserExePath("  \"" + Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Windows), "explorer.exe") + "\"  ");
+            Check("浏览器路径规范化", browserExe.EndsWith("explorer.exe", StringComparison.OrdinalIgnoreCase));
+            var missingRejected = false;
+            try { BrowserManager.NormalizeBrowserExePath(Path.Combine(temp, "missing_" + Guid.NewGuid().ToString("N") + ".exe")); }
+            catch (FileNotFoundException) { missingRejected = true; }
+            Check("浏览器路径缺失时报错", missingRejected);
+            var detected = BrowserManager.DetectBrowserExe();
+            Check("浏览器自动检测", detected == null || File.Exists(detected), detected ?? "未检测到（不视为失败）");
+
             var storeRoot = Path.Combine(Path.GetTempPath(), "deepseek_store_selftest");
             var storeFailures = SessionStoreSelfTest.Run(storeRoot);
             Check("会话持久化自检", storeFailures.Length == 0, string.Join(" | ", storeFailures));

@@ -16,6 +16,10 @@ public sealed class AppConfig
     public bool EnterToSend { get; set; } = true;
     public string LastSessionUrl { get; set; } = "";
     public int BrowserPort { get; set; } = 9222;
+
+    /// <summary>自定义浏览器主程序路径；空字符串表示自动查找 Chrome / Edge。</summary>
+    public string BrowserPath { get; set; } = "";
+
     public bool TermsAccepted { get; set; }
 }
 
@@ -136,7 +140,9 @@ public static class ConfigService
         if (cfg.OpacityPercent < 30) cfg.OpacityPercent = 30;
         if (cfg.OpacityPercent > 100) cfg.OpacityPercent = 100;
         if (cfg.BrowserPort <= 0 || cfg.BrowserPort > 65535) cfg.BrowserPort = 9222;
-            if (AppPaths.IsDev && cfg.BrowserPort == 9222) cfg.BrowserPort = 9223;
+        if (AppPaths.IsDev && cfg.BrowserPort == 9222) cfg.BrowserPort = 9223;
+        // 自定义浏览器路径：去掉粘贴时常带上的引号和首尾空白；空串表示自动检测。
+        cfg.BrowserPath = (cfg.BrowserPath ?? "").Trim().Trim('"').Trim();
         return cfg;
     }
 }

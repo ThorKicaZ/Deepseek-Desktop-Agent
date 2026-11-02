@@ -1475,6 +1475,7 @@ private void ToggleQueuePreview()
         _numDelayMin.Value = _cfg.DelayMinSeconds;
         _numDelayMax.Value = _cfg.DelayMaxSeconds;
         _trkOpacity.Value = _cfg.OpacityPercent;
+        RefreshBrowserPathLabel();
         _lblWorkDir.Text = "未选择工作目录";
         _txtInput.Clear();
         _txtDetailPrompt.Clear();

@@ -36,7 +36,7 @@ public sealed partial class MainForm
             if (!_browser.IsAlive)
             {
                 SetStatus("正在启动 DeepSeek 浏览器...");
-                await _browser.StartAsync(_cfg.BrowserPort, ct);
+                await _browser.StartAsync(_cfg.BrowserPort, _cfg.BrowserPath, ct);
             }
 
             if (_cdp == null)
@@ -106,7 +106,7 @@ public sealed partial class MainForm
             }
 
             SetStatus("DeepSeek 窗口被关闭，正在恢复...");
-            await _browser.StartAsync(_cfg.BrowserPort, CancellationToken.None);
+            await _browser.StartAsync(_cfg.BrowserPort, _cfg.BrowserPath, CancellationToken.None);
 
             if (_cdp != null)
             {

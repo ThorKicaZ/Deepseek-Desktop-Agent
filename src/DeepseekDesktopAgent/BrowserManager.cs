@@ -16,7 +16,12 @@ public sealed class BrowserManager : IDisposable
     private bool _embedded;
     private int _topCrop;
 
+    /// <summary>允许被识别为本程序浏览器的进程名：默认 Chrome / Edge，指定路径后追加对应主程序。</summary>
+    private readonly HashSet<string> _browserExeNames = new(StringComparer.OrdinalIgnoreCase) { "chrome.exe", "msedge.exe" };
+
     public int Port { get; private set; } = 9222;
+    /// <summary>本次启动使用的浏览器主程序完整路径；尚未启动时为 null。</summary>
+    public string? BrowserExePath { get; private set; }
     public bool ShuttingDown { get; private set; }
     public IntPtr Hwnd => _hwnd;
     public bool IsEmbedded => _embedded;
@@ -27,8 +32,14 @@ public sealed class BrowserManager : IDisposable
 
     public bool Starting { get; private set; }
 
-    public async Task StartAsync(int port, CancellationToken ct = default)
+    /// <param name="port">CDP 调试端口。</param>
+    /// <param name="browserExe">自定义浏览器主程序路径；为空时自动查找 Chrome / Edge。</param>
+    public async Task StartAsync(int port, string? browserExe = null, CancellationToken ct = default)
     {
+        // 路径先校验：配置写错时立即给出明确提示，不至于等到调试端口超时才报错。
+        var configuredExe = string.IsNullOrWhiteSpace(browserExe) ? null : NormalizeBrowserExePath(browserExe);
+        if (configuredExe != null) UseBrowserExe(configuredExe);
+
         await _startGate.WaitAsync(ct);
         Starting = true;
         try
@@ -75,9 +86,13 @@ public sealed class BrowserManager : IDisposable
                 throw new InvalidOperationException("调试端口 9222 已被其他程序占用，且无法在其中打开 DeepSeek 窗口。请关闭占用该端口的浏览器后重试。");
             }
 
-            var exe = FindBrowserExe();
+            var exe = configuredExe ?? DetectBrowserExe();
             if (exe == null)
-                throw new InvalidOperationException("未找到 Chrome 或 Edge，请先安装浏览器。");
+                throw new InvalidOperationException("未找到 Chrome 或 Edge。请在设置页指定浏览器主程序路径（需 Chromium 内核）。");
+
+            // 自定义浏览器同样使用 Chrome_WidgetWin_1 窗口类，识别窗口时按进程名放行。
+            UseBrowserExe(exe);
+            BrowserExePath = exe;
 
             Directory.CreateDirectory(AppPaths.BrowserProfileDir);
             var args = string.Join(' ', new[]
@@ -101,7 +116,9 @@ public sealed class BrowserManager : IDisposable
                 "--app=https://chat.deepseek.com"
             });
 
-            Log?.Invoke("正在启动浏览器: " + Path.GetFileName(exe));
+            Log?.Invoke(configuredExe != null
+                ? "正在启动指定的浏览器: " + exe
+                : "正在启动浏览器: " + Path.GetFileName(exe));
             var psi = new ProcessStartInfo(exe)
             {
                 UseShellExecute = false,
@@ -110,7 +127,7 @@ public sealed class BrowserManager : IDisposable
             _launcher = Process.Start(psi) ?? throw new InvalidOperationException("无法启动浏览器进程。");
 
             if (!await WaitPortAsync(port, 30000, ct))
-                throw new TimeoutException("浏览器调试端口 9222 未在 30 秒内就绪。");
+                throw new TimeoutException($"浏览器调试端口 {port} 未在 30 秒内就绪。请确认「{Path.GetFileName(exe)}」是 Chromium 内核浏览器（Chrome / Edge / Brave / Vivaldi / Chromium），且没有其他实例占用该端口。");
 
             var deadline = DateTime.UtcNow.AddSeconds(40);
             while (DateTime.UtcNow < deadline)
@@ -373,7 +390,7 @@ public sealed class BrowserManager : IDisposable
         cls.Equals("Chrome_WidgetWin_1", StringComparison.OrdinalIgnoreCase) ||
         cls.Equals("Chrome_WidgetWin_0", StringComparison.OrdinalIgnoreCase);
 
-    private static bool IsBrowserWindow(IntPtr hWnd)
+    private bool IsBrowserWindow(IntPtr hWnd)
     {
         if (hWnd == IntPtr.Zero || !Native.IsWindowVisible(hWnd)) return false;
         if (!IsBrowserClass(Native.GetWindowClass(hWnd))) return false;
@@ -389,20 +406,27 @@ public sealed class BrowserManager : IDisposable
     }
 
     /// <summary>
-    /// 只认真正的 Chrome/Edge 进程，排除 Trae/QQ 等同样使用 Chrome_WidgetWin_1 的 Electron 程序。
+    /// 只认真正的浏览器进程，排除 Trae/QQ 等同样使用 Chrome_WidgetWin_1 的 Electron 程序。
+    /// 默认识别 Chrome / Edge，指定自定义路径后同时放行该主程序（Brave、Vivaldi、Chromium 等）。
     /// </summary>
-    private static bool IsBrowserProcess(int pid)
+    private bool IsBrowserProcess(int pid)
     {
         if (pid <= 0 || pid == Environment.ProcessId) return false;
         try
         {
             using var p = Process.GetProcessById(pid);
-            var name = p.ProcessName.ToLowerInvariant();
-            if (name != "chrome" && name != "msedge") return false;
-            var file = Path.GetFileName(p.MainModule?.FileName ?? "").ToLowerInvariant();
-            return file == "chrome.exe" || file == "msedge.exe";
+            var file = Path.GetFileName(p.MainModule?.FileName ?? "");
+            return file.Length > 0 && _browserExeNames.Contains(file);
         }
         catch { return false; }
+    }
+
+    /// <summary>把指定浏览器主程序加入窗口识别白名单；传空时保持默认的 Chrome / Edge。</summary>
+    public void UseBrowserExe(string? exePath)
+    {
+        if (string.IsNullOrWhiteSpace(exePath)) return;
+        var name = Path.GetFileName(exePath.Trim().Trim('"'));
+        if (name.Length > 0) _browserExeNames.Add(name);
     }
 
     /// <summary>
@@ -459,7 +483,18 @@ public sealed class BrowserManager : IDisposable
         return best;
     }
 
-    private static string? FindBrowserExe()
+    /// <summary>展开环境变量并去掉粘贴时常见的引号；文件不存在时抛出带明确说明的异常。</summary>
+    public static string NormalizeBrowserExePath(string path)
+    {
+        var expanded = Environment.ExpandEnvironmentVariables((path ?? "").Trim().Trim('"').Trim());
+        if (expanded.Length == 0) return expanded;
+        if (!File.Exists(expanded))
+            throw new FileNotFoundException("配置的浏览器路径不存在：" + expanded + "。请在设置页重新选择浏览器主程序。", expanded);
+        return Path.GetFullPath(expanded);
+    }
+
+    /// <summary>按常见安装位置查找可用的 Chromium 内核浏览器；未找到返回 null。</summary>
+    public static string? DetectBrowserExe()
     {
         var local = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
         var programFiles = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles);
@@ -471,9 +506,27 @@ public sealed class BrowserManager : IDisposable
             Path.Combine(programFilesX86, "Google", "Chrome", "Application", "chrome.exe"),
             Path.Combine(programFilesX86, "Microsoft", "Edge", "Application", "msedge.exe"),
             Path.Combine(programFiles, "Microsoft", "Edge", "Application", "msedge.exe"),
-            Path.Combine(local, "Microsoft", "Edge", "Application", "msedge.exe")
+            Path.Combine(local, "Microsoft", "Edge", "Application", "msedge.exe"),
+            Path.Combine(local, "BraveSoftware", "Brave-Browser", "Application", "brave.exe"),
+            Path.Combine(programFiles, "BraveSoftware", "Brave-Browser", "Application", "brave.exe"),
+            Path.Combine(local, "Vivaldi", "Application", "vivaldi.exe"),
+            Path.Combine(programFiles, "Vivaldi", "Application", "vivaldi.exe"),
+            Path.Combine(local, "Chromium", "Application", "chrome.exe")
         };
         return candidates.FirstOrDefault(File.Exists);
+    }
+
+    /// <summary>等待调试端口释放（关闭浏览器后按新路径重启前使用）；超时返回 false。</summary>
+    public async Task<bool> WaitPortClosedAsync(int timeoutMs = 5000, CancellationToken ct = default)
+    {
+        var deadline = DateTime.UtcNow.AddMilliseconds(Math.Max(0, timeoutMs));
+        while (DateTime.UtcNow < deadline)
+        {
+            ct.ThrowIfCancellationRequested();
+            if (!await IsPortReadyAsync(Port, ct)) return true;
+            await Task.Delay(200, ct);
+        }
+        return !await IsPortReadyAsync(Port, ct);
     }
 
     private static async Task<bool> IsPortReadyAsync(int port, CancellationToken ct)

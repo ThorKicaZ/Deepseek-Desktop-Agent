@@ -6,6 +6,7 @@
 ## 特性
 
 - 零 API Key、零 Token 费用，直接使用 DeepSeek 网页版
+- 可指定浏览器主程序路径，不再局限于默认的 Chrome / Edge（支持 Chrome、Edge、Brave、Vivaldi、Chromium 等内核）
 - 单文件 exe，自包含发布，无需安装 .NET 运行时
 - DeepSeek 窗口内嵌到主界面，随主程序关闭，也可还原为独立窗口
 - PowerShell 后台执行，不弹出黑框，指令与输出实时显示在内置选项卡
@@ -43,13 +44,14 @@ dotnet publish src\DeepseekDesktopAgent\DeepseekDesktopAgent.csproj -c Release -
 
 1. 下载任一版本，右键 `Deepseek-Desktop-Agent.exe`，选择以管理员身份运行。依赖版需先安装 .NET 10 Desktop Runtime。
 2. 点击“选择工作目录”，选择一个目录。
-3. 程序会启动 Edge/Chrome 并打开 DeepSeek，请先在浏览器内登录。
+3. 程序会自动查找并启动 Chrome / Edge，并打开 DeepSeek，请先在浏览器内登录。如需使用其他浏览器，在「设置 → 浏览器」中指定主程序路径（需 Chromium 内核），或手动填入可执行文件完整路径；修改后点「重启浏览器」即可生效。
 4. 点击“开始 / 继续”，等待 DeepSeek 读取系统提示词。
 5. 之后的对话请在 Deepseek Desktop Agent 的输入框内发送，网页窗口仅用于查看。
 
 ## 数据与配置
 
 - 配置文件：`%APPDATA%\Deepseek-Desktop-Agent\config.json`
+  - `browserPath`：浏览器主程序路径，留空为自动检测（Chrome → Edge → Brave → Vivaldi → Chromium）。也可手动编辑该字段，支持环境变量（如 `%ProgramFiles%\...`）。
 - 浏览器调试配置：`%TEMP%\deepseek_debug_profile`（可复用已有登录）
 - 每次运行的临时目录：`%TEMP%\Deepseek-Desktop-Agent_<pid>_<随机数>`
 

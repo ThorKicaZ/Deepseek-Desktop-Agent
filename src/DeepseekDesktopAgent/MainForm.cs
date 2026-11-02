@@ -66,12 +66,14 @@ public sealed partial class MainForm : Form, IToolHost, IMessageFilter
     private Label _lblHeroTitle = null!;
     private Label _lblPsState = null!;
     private Label _lblOpacity = null!;
+    private Label _lblBrowserPath = null!;
     private Label _lblInputPlaceholder = null!;
     private Label _lblDetailWorkDir = null!;
     private TextBox _txtDetailPrompt = null!;
     private ScrollMask _detailPromptMask = null!;
     private LineScrollBar _detailPromptScroll = null!;
     private Button _btnChooseDir2 = null!;
+    private Button _btnPickBrowser = null!;
     private Button _btnShowWeb = null!;
     private Label _lblWebState = null!;
     private bool _webShown;
